@@ -349,4 +349,20 @@ export class GameRoom {
       total: calculateTotal(player.scores),
     };
   }
+
+  /**
+   * 다른 플레이어의 점수표 조회 (playerId 기준)
+   */
+  getPlayerScoreCardById(playerId) {
+    const player = this.players.find(p => p.id === playerId);
+    if (!player) return null;
+    return {
+      playerId: player.id,
+      name: player.name,
+      color: player.color,
+      scores: { ...player.scores },
+      bonus: calculateBonus(player.scores),
+      total: calculateTotal(player.scores),
+    };
+  }
 }

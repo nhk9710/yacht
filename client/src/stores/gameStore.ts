@@ -39,6 +39,16 @@ export const useGameStore = defineStore('game', () => {
   // ========== 결과 ==========
   const rankings = ref<Ranking[]>([])
 
+  // ========== 다른 플레이어 점수 조회 ==========
+  const viewingPlayerScore = ref<{
+    playerId: string
+    name: string
+    color: string
+    scores: ScoreCard
+    bonus: number
+    total: number
+  } | null>(null)
+
   // ========== 3D 시뮬레이션 상태 ==========
   const isRolling = ref(false) // 물리 시뮬레이션 진행 중
   const rollingPlayerId = ref('') // 현재 굴리기를 시작한 플레이어 ID
@@ -151,6 +161,14 @@ export const useGameStore = defineStore('game', () => {
     phase.value = 'finished'
   }
 
+  function setViewingPlayerScore(data: typeof viewingPlayerScore.value) {
+    viewingPlayerScore.value = data
+  }
+
+  function clearViewingPlayerScore() {
+    viewingPlayerScore.value = null
+  }
+
   function toggleKeep(index: number) {
     if (!isMyTurn.value || turnState.value.rollCount === 0 || turnState.value.rollCount >= 3) return
     turnState.value.kept[index] = !turnState.value.kept[index]
@@ -182,6 +200,7 @@ export const useGameStore = defineStore('game', () => {
     currentPlayerIndex, currentRound, turnState,
     myScores, myBonus, myTotal, possibleScores,
     rankings, isRolling, rollingPlayerId, physicsStreamData,
+    viewingPlayerScore,
     // Computed
     myPlayer, isMyTurn, currentPlayer, canRoll, canSelectScore, isHost, isMyRolling,
     // Actions
@@ -189,5 +208,6 @@ export const useGameStore = defineStore('game', () => {
     startRolling, updateDiceRolled, updatePhysicsStream,
     onPhysicsComplete, updateKept,
     setRankings, toggleKeep, reset,
+    setViewingPlayerScore, clearViewingPlayerScore,
   }
 })

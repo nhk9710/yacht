@@ -246,6 +246,20 @@ io.on('connection', (socket) => {
     }
   });
 
+  // ========== 다른 플레이어 점수 조회 ==========
+  socket.on('score:request', ({ playerId }) => {
+    if (room.phase !== 'playing' && room.phase !== 'finished') {
+      socket.emit('error', { message: '게임이 진행 중이 아닙니다.' });
+      return;
+    }
+    const scoreData = room.getPlayerScoreCardById(playerId);
+    if (!scoreData) {
+      socket.emit('error', { message: '플레이어를 찾을 수 없습니다.' });
+      return;
+    }
+    socket.emit('score:player', scoreData);
+  });
+
   // ========== 게임 재시작 ==========
   socket.on('game:restart', () => {
     const player = room.getPlayer(socket.id);

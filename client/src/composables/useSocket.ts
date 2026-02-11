@@ -87,6 +87,11 @@ export function useSocket() {
       store.setRankings(rankings)
     })
 
+    // 다른 플레이어 점수표 수신
+    socket.on('score:player', (data) => {
+      store.setViewingPlayerScore(data)
+    })
+
     // 에러
     socket.on('error', ({ message }) => {
       console.error('[Server Error]', message)
@@ -121,6 +126,10 @@ export function useSocket() {
     socket?.emit('score:select', { category })
   }
 
+  function requestPlayerScore(playerId: string) {
+    socket?.emit('score:request', { playerId })
+  }
+
   function restartGame() {
     socket?.emit('game:restart')
   }
@@ -139,6 +148,7 @@ export function useSocket() {
     sendPhysicsStream,
     setKept,
     selectCategory,
+    requestPlayerScore,
     restartGame,
     disconnect,
   }

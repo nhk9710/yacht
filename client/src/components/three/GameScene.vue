@@ -157,9 +157,9 @@ function initScene() {
   scene.background = new THREE.Color('#0d0d14')
   scene.fog = new THREE.Fog('#0d0d14', 15, 30)
 
-  // Camera
+  // Camera (Top-down view)
   camera = new THREE.PerspectiveCamera(45, getAspect(), 0.1, 100)
-  camera.position.set(0, 8, 8)
+  camera.position.set(0, 12, 0.01) // 거의 수직 위에서 내려다봄 (0.01 Z로 lookAt 방향 보장)
   camera.lookAt(0, 0, 0)
 
   // Lighting
@@ -167,7 +167,7 @@ function initScene() {
   scene.add(ambientLight)
 
   const dirLight = new THREE.DirectionalLight(0xffffff, 1.0)
-  dirLight.position.set(5, 10, 5)
+  dirLight.position.set(3, 12, 3) // Top-down 시점에 맞게 조명 위치 조정
   dirLight.castShadow = true
   dirLight.shadow.mapSize.width = 2048
   dirLight.shadow.mapSize.height = 2048
@@ -837,10 +837,11 @@ function animate() {
   // 유지 하이라이트 업데이트
   updateKeptVisuals()
 
-  // 카메라 살짝 흔들림 (생동감)
+  // 카메라 미세 흔들림 (top-down 시점에서 생동감)
   if (camera) {
     const time = performance.now() * 0.0001
-    camera.position.x = Math.sin(time) * 0.1
+    camera.position.x = Math.sin(time) * 0.05
+    camera.position.z = 0.01 + Math.cos(time) * 0.05
   }
 
   if (renderer && scene && camera) {

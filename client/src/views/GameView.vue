@@ -1,13 +1,30 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useGameStore } from '../stores/gameStore'
 import { useSocket } from '../composables/useSocket'
 import GameScene from '../components/three/GameScene.vue'
 import ScoreCard from '../components/ui/ScoreCard.vue'
+import PlayerScorePopup from '../components/ui/PlayerScorePopup.vue'
 
 const store = useGameStore()
 const socket = useSocket()
 
+// ========== 팝업 상태 ==========
+const showScorePopup = ref(false)
+
+function openPlayerScore(playerId: string) {
+  // 내 점수는 이미 사이드 패널에 표시되므로 다른 플레이어만
+  if (playerId === store.mySocketId) return
+  socket.requestPlayerScore(playerId)
+  showScorePopup.value = true
+}
+
+function closeScorePopup() {
+  showScorePopup.value = false
+  store.clearViewingPlayerScore()
+}
+
+// ========== 턴 정보 ==========
 const turnInfo = computed(() => {
   const player = store.currentPlayer
   if (!player) return ''
@@ -15,6 +32,7 @@ const turnInfo = computed(() => {
   return `${name}의 차례`
 })
 
+// ========== 주사위 굴리기 ==========
 const rollButtonText = computed(() => {
   if (store.isRolling) return '굴리는 중...'
   if (store.turnState.rollCount === 0) return '주사위 굴리기'
@@ -23,7 +41,6 @@ const rollButtonText = computed(() => {
 })
 
 function handleRoll() {
-  // 먼저 현재 kept 상태 서버에 전송
   if (store.turnState.rollCount > 0) {
     socket.setKept(store.turnState.kept)
   }
@@ -39,13 +56,16 @@ function toggleKeep(index: number) {
   socket.setKept(store.turnState.kept)
 }
 
+// ========== 주사위 표시 ==========
 const diceDisplay = computed(() => {
-  const faces = ['', '\u2680', '\u2681', '\u2682', '\u2683', '\u2684', '\u2685']
   return store.turnState.dice.map((v, i) => ({
     value: v,
-    face: v > 0 ? faces[v] : '?',
     kept: store.turnState.kept[i],
   }))
+})
+
+const diceSum = computed(() => {
+  return store.turnState.dice.reduce((a, b) => a + b, 0)
 })
 </script>
 
@@ -60,23 +80,35 @@ const diceDisplay = computed(() => {
         />
         <span class="turn-text">{{ turnInfo }}</span>
       </div>
-      <div class="round-info">
-        <span class="label">라운드</span>
-        <span class="value">{{ store.currentRound }} / 12</span>
+      <div class="game-info">
+        <div class="info-item">
+          <span class="label">라운드</span>
+          <span class="value">{{ store.currentRound }} / 12</span>
+        </div>
+        <div class="info-item">
+          <span class="label">굴림</span>
+          <span class="value">{{ store.turnState.rollCount }} / 3</span>
+        </div>
       </div>
-      <div class="roll-info">
-        <span class="label">굴림</span>
-        <span class="value">{{ store.turnState.rollCount }} / 3</span>
-      </div>
-      <div class="players-mini">
-        <span
+      <!-- 플레이어 이름 뱃지 (우측) -->
+      <div class="player-badges">
+        <div
           v-for="player in store.players"
           :key="player.id"
-          class="mini-dot"
-          :class="{ active: player.id === store.currentPlayer?.id }"
-          :style="{ background: player.color }"
-          :title="player.name"
-        />
+          class="player-badge"
+          :class="{
+            'is-current': player.id === store.currentPlayer?.id,
+            'is-me': player.id === store.mySocketId,
+            'clickable': player.id !== store.mySocketId,
+          }"
+          @click="openPlayerScore(player.id)"
+        >
+          <span class="badge-dot" :style="{ background: player.color }" />
+          <span class="badge-name">
+            {{ player.name }}
+            <template v-if="player.id === store.mySocketId">(나)</template>
+          </span>
+        </div>
       </div>
     </div>
 
@@ -87,58 +119,54 @@ const diceDisplay = computed(() => {
         <GameScene />
       </div>
 
-      <!-- 점수 카드 -->
+      <!-- 우측 패널: 컨트롤 + 점수표 -->
       <div class="side-panel">
-        <ScoreCard />
-      </div>
-    </div>
+        <!-- 주사위 결과 + 굴리기 버튼 영역 -->
+        <div class="controls-area">
+          <!-- 주사위 결과 숫자 표시 -->
+          <div class="dice-results" v-if="store.turnState.rollCount > 0">
+            <div
+              v-for="(d, i) in diceDisplay"
+              :key="i"
+              class="dice-chip"
+              :class="{
+                kept: d.kept,
+                clickable: store.isMyTurn && store.turnState.rollCount > 0 && store.turnState.rollCount < 3 && !store.isRolling,
+              }"
+              @click="toggleKeep(i)"
+            >
+              <span class="dice-number">{{ d.value > 0 ? d.value : '?' }}</span>
+              <span v-if="d.kept" class="kept-dot" />
+            </div>
+            <div class="dice-sum">
+              <span class="sum-label">합계</span>
+              <span class="sum-value">{{ diceSum }}</span>
+            </div>
+          </div>
 
-    <!-- 하단 컨트롤 바 -->
-    <div class="bottom-bar">
-      <!-- 주사위 선택기 -->
-      <div class="dice-selector" v-if="store.turnState.rollCount > 0">
-        <div
-          v-for="(d, i) in diceDisplay"
-          :key="i"
-          class="dice-btn"
-          :class="{
-            kept: d.kept,
-            clickable: store.isMyTurn && store.turnState.rollCount > 0 && store.turnState.rollCount < 3 && !store.isRolling,
-          }"
-          @click="toggleKeep(i)"
-        >
-          <span class="dice-face">{{ d.face }}</span>
-          <span v-if="d.kept" class="kept-label">KEEP</span>
+          <!-- 굴리기 버튼 -->
+          <button
+            class="btn btn-primary roll-btn"
+            :disabled="!store.canRoll"
+            @click="handleRoll"
+          >
+            {{ rollButtonText }}
+          </button>
         </div>
-      </div>
 
-      <!-- 굴리기 버튼 -->
-      <div class="roll-section">
-        <button
-          class="btn btn-primary btn-lg roll-btn"
-          :disabled="!store.canRoll"
-          @click="handleRoll"
-        >
-          {{ rollButtonText }}
-        </button>
-      </div>
-
-      <!-- 플레이어 목록 -->
-      <div class="player-bar">
-        <div
-          v-for="player in store.players"
-          :key="player.id"
-          class="player-chip"
-          :class="{ 'is-current': player.id === store.currentPlayer?.id }"
-        >
-          <span class="chip-dot" :style="{ background: player.color }" />
-          <span class="chip-name">
-            {{ player.name }}
-            <template v-if="player.id === store.mySocketId">(나)</template>
-          </span>
+        <!-- 점수 카드 -->
+        <div class="scorecard-wrapper">
+          <ScoreCard />
         </div>
       </div>
     </div>
+
+    <!-- 플레이어 점수 팝업 -->
+    <PlayerScorePopup
+      v-if="showScorePopup"
+      :data="store.viewingPlayerScore"
+      @close="closeScorePopup"
+    />
   </div>
 </template>
 
@@ -150,12 +178,12 @@ const diceDisplay = computed(() => {
   flex-direction: column;
 }
 
-/* 상단 바 */
+/* ========== 상단 바 ========== */
 .top-bar {
   display: flex;
   align-items: center;
-  gap: 24px;
-  padding: 10px 20px;
+  gap: 16px;
+  padding: 8px 16px;
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border-color);
   z-index: 10;
@@ -167,42 +195,81 @@ const diceDisplay = computed(() => {
   align-items: center;
   gap: 8px;
   font-weight: 600;
-  font-size: 15px;
+  font-size: 14px;
+  white-space: nowrap;
 }
 
 .turn-dot {
   width: 10px;
   height: 10px;
   border-radius: 50%;
+  flex-shrink: 0;
 }
 
-.round-info, .roll-info {
+.game-info {
   display: flex;
-  gap: 6px;
+  gap: 16px;
+}
+
+.info-item {
+  display: flex;
+  gap: 5px;
   font-size: 13px;
+  white-space: nowrap;
 }
 .label { color: var(--text-muted); }
 .value { color: var(--text-primary); font-weight: 600; }
 
-.players-mini {
+/* ========== 플레이어 뱃지 ========== */
+.player-badges {
   display: flex;
   gap: 6px;
   margin-left: auto;
-}
-.mini-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  opacity: 0.4;
-  transition: all 0.3s;
-}
-.mini-dot.active {
-  opacity: 1;
-  transform: scale(1.4);
-  box-shadow: 0 0 6px currentColor;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
-/* 메인 영역 */
+.player-badge {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  background: var(--bg-tertiary);
+  border-radius: 16px;
+  font-size: 12px;
+  border: 1px solid transparent;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+
+.player-badge.is-current {
+  background: rgba(99, 102, 241, 0.15);
+  border-color: var(--accent);
+}
+
+.player-badge.clickable {
+  cursor: pointer;
+}
+
+.player-badge.clickable:hover {
+  background: rgba(99, 102, 241, 0.1);
+  border-color: var(--accent-hover);
+  transform: translateY(-1px);
+}
+
+.badge-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.badge-name {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+/* ========== 메인 영역 ========== */
 .main-area {
   flex: 1;
   display: flex;
@@ -215,129 +282,120 @@ const diceDisplay = computed(() => {
   min-width: 0;
 }
 
+/* ========== 우측 패널 ========== */
 .side-panel {
   width: 260px;
   flex-shrink: 0;
-  padding: 12px;
-  border-left: 1px solid var(--border-color);
-  background: var(--bg-primary);
-  overflow-y: auto;
-}
-
-/* 하단 바 */
-.bottom-bar {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 12px 20px;
-  background: var(--bg-secondary);
-  border-top: 1px solid var(--border-color);
-  flex-shrink: 0;
-  z-index: 10;
-}
-
-/* 주사위 선택기 */
-.dice-selector {
-  display: flex;
-  gap: 8px;
-}
-
-.dice-btn {
-  width: 52px;
-  height: 60px;
   display: flex;
   flex-direction: column;
+  border-left: 1px solid var(--border-color);
+  background: var(--bg-primary);
+}
+
+/* ========== 컨트롤 영역 (주사위 결과 + 굴리기 버튼) ========== */
+.controls-area {
+  flex-shrink: 0;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+/* 주사위 결과 숫자 표시 */
+.dice-results {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.dice-chip {
+  width: 36px;
+  height: 36px;
+  display: flex;
   align-items: center;
   justify-content: center;
   background: var(--bg-tertiary);
   border: 2px solid var(--border-color);
-  border-radius: 10px;
+  border-radius: 8px;
+  position: relative;
   transition: all 0.2s;
   user-select: none;
 }
 
-.dice-btn.clickable {
+.dice-chip.clickable {
   cursor: pointer;
 }
-.dice-btn.clickable:hover {
+.dice-chip.clickable:hover {
   border-color: var(--accent);
   background: rgba(99, 102, 241, 0.1);
 }
 
-.dice-btn.kept {
+.dice-chip.kept {
   border-color: var(--accent);
   background: rgba(99, 102, 241, 0.15);
-  box-shadow: 0 0 8px rgba(99, 102, 241, 0.2);
 }
 
-.dice-face {
-  font-size: 28px;
-  line-height: 1;
+.dice-number {
+  font-size: 16px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
 }
 
-.kept-label {
-  font-size: 8px;
+.kept-dot {
+  position: absolute;
+  bottom: 2px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.dice-sum {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-left: auto;
+  padding-left: 6px;
+  border-left: 1px solid var(--border-color);
+}
+
+.sum-label {
+  font-size: 9px;
+  color: var(--text-muted);
+  letter-spacing: 0.5px;
+}
+
+.sum-value {
+  font-size: 16px;
   font-weight: 700;
   color: var(--accent);
-  letter-spacing: 1px;
-  margin-top: 2px;
+  font-variant-numeric: tabular-nums;
 }
 
 /* 굴리기 버튼 */
-.roll-section {
-  flex: 1;
-  display: flex;
-  justify-content: center;
-}
-
 .roll-btn {
-  min-width: 200px;
+  width: 100%;
+  padding: 8px 12px;
+  font-size: 13px;
 }
 
-/* 플레이어 바 */
-.player-bar {
-  display: flex;
-  gap: 8px;
+/* ========== 점수카드 래퍼 ========== */
+.scorecard-wrapper {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 12px 12px;
+  min-height: 0;
 }
 
-.player-chip {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
-  background: var(--bg-tertiary);
-  border-radius: 20px;
-  font-size: 12px;
-  transition: all 0.3s;
-}
-
-.player-chip.is-current {
-  background: rgba(99, 102, 241, 0.15);
-  border: 1px solid var(--accent);
-}
-
-.chip-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-}
-
-.chip-name {
-  white-space: nowrap;
-}
-
-/* 반응형 */
+/* ========== 반응형 ========== */
 @media (max-width: 768px) {
   .side-panel {
     display: none;
   }
-  .bottom-bar {
-    flex-wrap: wrap;
-    gap: 8px;
-  }
-  .player-bar {
-    width: 100%;
-    justify-content: center;
+  .game-info {
+    display: none;
   }
 }
 </style>
