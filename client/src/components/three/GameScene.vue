@@ -191,6 +191,11 @@ function initScene() {
   world.solver.iterations = 10
   world.allowSleep = true
 
+  // CCD(Continuous Collision Detection) 기본 설정
+  // 빠른 속도의 주사위가 얇은 테이블을 관통하는 것을 방지
+  world.defaultContactMaterial.contactEquationStiffness = 1e8
+  world.defaultContactMaterial.contactEquationRelaxation = 3
+
   diceMaterial = new CANNON.Material('dice')
   tableMaterial = new CANNON.Material('table')
 
@@ -253,14 +258,16 @@ function createTable() {
   edgeRight.castShadow = true
   scene.add(edgeRight)
 
-  // 물리: 테이블 바디
+  // 물리: 테이블 바디 (두꺼운 콜라이더로 터널링 방지)
   tableBody = new CANNON.Body({
     type: CANNON.Body.STATIC,
     material: tableMaterial,
   })
+  // 테이블 콜라이더를 충분히 두껍게 (반높이 1.0 → 전체 높이 2.0)
+  // 상단 면이 Y=0에 위치하도록 오프셋 조정
   tableBody.addShape(
-    new CANNON.Box(new CANNON.Vec3(4, 0.15, 3)),
-    new CANNON.Vec3(0, -0.15, 0)
+    new CANNON.Box(new CANNON.Vec3(4, 1.0, 3)),
+    new CANNON.Vec3(0, -1.0, 0)
   )
   world.addBody(tableBody)
 }
@@ -323,6 +330,8 @@ function createDice() {
       allowSleep: true,
       sleepSpeedLimit: 0.1,
       sleepTimeLimit: 1.0,
+      linearDamping: 0.1,  // 약간의 공기 저항으로 과도한 속도 억제
+      angularDamping: 0.1,
     })
     body.position.set(-10, -10, -10)
     world.addBody(body)
@@ -548,6 +557,32 @@ function animateCupHide(): Promise<void> {
   })
 }
 
+// ========== 주사위 낙하 복구 ==========
+const FLOOR_Y = -0.5 // 이 높이 아래로 떨어지면 복구
+const RESPAWN_Y = 2.0 // 복구 시 드롭할 높이
+
+function recoverFallenDice() {
+  for (let i = 0; i < 5; i++) {
+    if (store.turnState.kept[i]) continue
+    const body = diceBodies[i]
+    if (body.type === CANNON.Body.STATIC) continue
+    if (body.position.y < FLOOR_Y) {
+      // 테이블 중앙 위로 재배치
+      const rx = (Math.random() - 0.5) * 2
+      const rz = (Math.random() - 0.5) * 2
+      body.position.set(rx, RESPAWN_Y, rz)
+      body.velocity.set(0, -1, 0) // 가볍게 낙하
+      body.angularVelocity.set(
+        (Math.random() - 0.5) * 5,
+        (Math.random() - 0.5) * 5,
+        (Math.random() - 0.5) * 5,
+      )
+      body.wakeUp()
+      console.warn(`[Physics] 주사위 ${i}이(가) 낙하하여 복구됨`)
+    }
+  }
+}
+
 // ========== 주사위 정지 감지 ==========
 function checkDiceSettled(): boolean {
   const threshold = 0.05
@@ -752,7 +787,11 @@ function animate() {
 
   // ===== 물리 시뮬레이션 (Observer 스트림 모드에서는 비활성화) =====
   if (world && !isObserverStreaming) {
-    world.step(1 / 60)
+    // substep을 사용하여 프레임 드롭 시에도 안정적인 물리 시뮬레이션
+    // fixedTimeStep=1/120, maxSubSteps=5로 터널링 방지
+    world.step(1 / 120, 1 / 60, 5)
+    // 낙하한 주사위 복구
+    recoverFallenDice()
   }
 
   // ===== Roller/Idle: 물리 바디 → 메시 동기화 =====
