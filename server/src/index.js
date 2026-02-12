@@ -20,6 +20,12 @@ const io = new Server(server, {
 
 // 프로덕션: 빌드된 클라이언트 정적 파일 서빙
 app.use(express.static(join(__dirname, '..', 'public')));
+
+// Player count API for portal
+app.get('/api/player-count', (_req, res) => {
+  res.json({ count: room.players.filter(p => p.isConnected).length });
+});
+
 app.get('*', (req, res) => {
   res.sendFile(join(__dirname, '..', 'public', 'index.html'));
 });
