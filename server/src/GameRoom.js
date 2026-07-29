@@ -10,8 +10,6 @@ import {
 const PLAYER_COLORS = ['#ef4444', '#3b82f6', '#22c55e', '#eab308', '#a855f7'];
 const MAX_PLAYERS = 5;
 const MAX_ROLLS = 3;
-const TOTAL_ROUNDS = 12;
-const DISCONNECT_TIMEOUT = 30000; // 30초
 
 export class GameRoom {
   constructor(roomId) {
@@ -25,7 +23,6 @@ export class GameRoom {
       dice: [0, 0, 0, 0, 0],
       kept: [false, false, false, false, false],
     };
-    this.disconnectTimers = new Map();
     this.waitingForResult = false;
     this.rollResultTimeout = null;
   }
@@ -70,18 +67,22 @@ export class GameRoom {
     // 게임 중이면 연결 끊김 처리
     const player = this.players[index];
     player.isConnected = false;
+    // 호스트가 이탈하면 접속 중인 플레이어에게 이양
+    if (player.isHost) {
+      const successor = this.players.find(p => p.isConnected);
+      if (successor) {
+        player.isHost = false;
+        successor.isHost = true;
+      }
+    }
     return player;
   }
 
   reconnectPlayer(socketId, oldPlayerId) {
     const player = this.players.find(p => p.id === oldPlayerId);
-    if (!player) return null;
+    if (!player || player.isConnected) return null;
     player.id = socketId;
     player.isConnected = true;
-    if (this.disconnectTimers.has(oldPlayerId)) {
-      clearTimeout(this.disconnectTimers.get(oldPlayerId));
-      this.disconnectTimers.delete(oldPlayerId);
-    }
     return player;
   }
 
@@ -240,8 +241,16 @@ export class GameRoom {
       };
     }
 
-    // 다음 턴으로
-    this.advanceTurn();
+    // 다음 턴으로 (끊긴 플레이어 0점 처리로 게임이 끝날 수 있음)
+    if (this.advanceTurn()) {
+      return {
+        score,
+        category,
+        playerId: socketId,
+        gameFinished: true,
+        rankings: this.calculateRankings(),
+      };
+    }
 
     return {
       score,
@@ -254,27 +263,37 @@ export class GameRoom {
     };
   }
 
+  /**
+   * 다음 플레이어로 턴을 넘긴다. 점수판이 다 찬 플레이어는 건너뛰고,
+   * 연결 끊긴 플레이어는 남은 카테고리를 0점 처리한 뒤 계속 건너뛴다.
+   * @returns {boolean} 스킵 과정에서 전원 점수판이 완료되어 게임이 끝나면 true
+   */
   advanceTurn() {
     this.resetTurn();
 
-    // 다음 플레이어 찾기 (점수판이 다 찬 플레이어는 건너뜀)
+    const n = this.players.length;
     let attempts = 0;
-    do {
-      this.currentPlayerIndex = (this.currentPlayerIndex + 1) % this.players.length;
+    while (attempts < n * 2) {
+      this.currentPlayerIndex = (this.currentPlayerIndex + 1) % n;
       if (this.currentPlayerIndex === 0) {
         this.currentRound++;
       }
       attempts++;
-    } while (
-      isScoreCardComplete(this.players[this.currentPlayerIndex].scores) &&
-      attempts < this.players.length * 2
-    );
 
-    // 연결 끊긴 플레이어 턴이면 스킵
-    const current = this.getCurrentPlayer();
-    if (!current.isConnected) {
-      this.handleDisconnectedPlayerTurn(current);
+      const current = this.getCurrentPlayer();
+      if (isScoreCardComplete(current.scores)) continue;
+      if (!current.isConnected) {
+        this.handleDisconnectedPlayerTurn(current);
+        continue;
+      }
+      return false; // 플레이 가능한 플레이어에게 턴 도착
     }
+
+    if (this.players.every(p => isScoreCardComplete(p.scores))) {
+      this.phase = 'finished';
+      return true;
+    }
+    return false;
   }
 
   handleDisconnectedPlayerTurn(player) {
@@ -302,6 +321,11 @@ export class GameRoom {
   }
 
   restart() {
+    // 연결 끊긴 플레이어 정리, 호스트 부재 시 재지정
+    this.players = this.players.filter(p => p.isConnected);
+    if (this.players.length > 0 && !this.players.some(p => p.isHost)) {
+      this.players[0].isHost = true;
+    }
     this.phase = 'waiting';
     this.currentPlayerIndex = 0;
     this.currentRound = 1;

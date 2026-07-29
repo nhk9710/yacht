@@ -4,11 +4,31 @@ import type { ScoreCategory } from '../types/game'
 
 let socket: Socket | null = null
 
+const SESSION_KEY = 'yacht:session'
+
+// 새로고침/재연결 복귀용 세션 (탭 단위)
+function saveSession(code: string, playerId: string) {
+  sessionStorage.setItem(SESSION_KEY, JSON.stringify({ code, playerId }))
+}
+
+export function loadSession(): { code: string; playerId: string } | null {
+  try {
+    const raw = sessionStorage.getItem(SESSION_KEY)
+    return raw ? JSON.parse(raw) : null
+  } catch {
+    return null
+  }
+}
+
+function clearSession() {
+  sessionStorage.removeItem(SESSION_KEY)
+}
+
 export function useSocket() {
   const store = useGameStore()
 
   function connect() {
-    if (socket?.connected) return
+    if (socket) return // 이미 생성됨 (연결 중이면 socket.io가 이어서 처리)
 
     socket = io(window.location.origin, {
       transports: ['websocket', 'polling'],
@@ -18,6 +38,12 @@ export function useSocket() {
       store.mySocketId = socket!.id!
       store.connected = true
       console.log('[Socket] 연결됨:', socket!.id)
+
+      // 세션이 남아 있고 소켓 id가 바뀌었으면 재접속 시도 (새로고침·자동 재연결)
+      const session = loadSession()
+      if (session && session.playerId !== socket!.id) {
+        socket!.emit('room:rejoin', { code: session.code, playerId: session.playerId })
+      }
     })
 
     socket.on('disconnect', () => {
@@ -29,6 +55,22 @@ export function useSocket() {
     socket.on('room:created', ({ code, state }) => {
       store.roomCode = code
       store.updateRoomState(state)
+      saveSession(code, socket!.id!)
+    })
+
+    // 재접속 성공
+    socket.on('room:rejoined', ({ code, state }) => {
+      store.roomCode = code
+      store.updateRoomState(state)
+      saveSession(code, socket!.id!)
+      console.log('[Socket] 재접속 완료:', code)
+    })
+
+    // 재접속 실패 (방 소멸·대기실 이탈 등) → 세션 폐기하고 로비로
+    socket.on('room:rejoin:error', ({ message }) => {
+      console.warn('[Socket] 재접속 실패:', message)
+      clearSession()
+      store.reset()
     })
 
     // 방 상태 동기화

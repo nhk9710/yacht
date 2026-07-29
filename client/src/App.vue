@@ -1,10 +1,18 @@
 <script setup lang="ts">
+import { onMounted } from 'vue'
 import { useGameStore } from './stores/gameStore'
+import { useSocket, loadSession } from './composables/useSocket'
 import LobbyView from './views/LobbyView.vue'
 import GameView from './views/GameView.vue'
 import ResultView from './views/ResultView.vue'
 
 const store = useGameStore()
+const socket = useSocket()
+
+// 새로고침 복귀: 세션이 남아 있으면 연결 (connect 핸들러가 room:rejoin 전송)
+onMounted(() => {
+  if (loadSession()) socket.connect()
+})
 </script>
 
 <template>
