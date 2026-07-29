@@ -167,7 +167,7 @@ function initScene() {
   camera.lookAt(0, 0, 0)
 
   // Lighting
-  const ambientLight = new THREE.AmbientLight(0xffffff, 0.4)
+  const ambientLight = new THREE.AmbientLight(0xffffff, 0.5)
   scene.add(ambientLight)
 
   const dirLight = new THREE.DirectionalLight(0xffffff, 1.0)
@@ -219,47 +219,88 @@ function initScene() {
 }
 
 // ========== 테이블 생성 ==========
+// 펠트 질감 캔버스 텍스처: 중앙이 밝은 라디얼 그라데이션 + 미세 노이즈 + 크림 보더 라인
+function createFeltTexture(): THREE.CanvasTexture {
+  const w = 1024
+  const h = 768
+  const canvas = document.createElement('canvas')
+  canvas.width = w
+  canvas.height = h
+  const ctx = canvas.getContext('2d')!
+
+  const grad = ctx.createRadialGradient(w / 2, h / 2, 80, w / 2, h / 2, w * 0.62)
+  grad.addColorStop(0, '#66c08e')
+  grad.addColorStop(1, '#3f9e68')
+  ctx.fillStyle = grad
+  ctx.fillRect(0, 0, w, h)
+
+  // 펠트 미세 노이즈
+  for (let i = 0; i < 3500; i++) {
+    ctx.fillStyle = Math.random() > 0.5 ? 'rgba(255,255,255,0.03)' : 'rgba(0,40,20,0.04)'
+    ctx.fillRect(Math.random() * w, Math.random() * h, 2, 2)
+  }
+
+  // 크림색 보더 라인
+  ctx.strokeStyle = 'rgba(246, 237, 214, 0.5)'
+  ctx.lineWidth = 6
+  ctx.beginPath()
+  ctx.roundRect(56, 56, w - 112, h - 112, 40)
+  ctx.stroke()
+
+  const texture = new THREE.CanvasTexture(canvas)
+  texture.anisotropy = 4
+  return texture
+}
+
 function createTable() {
-  // 상판
-  const tableGeo = new THREE.BoxGeometry(8, 0.3, 6)
-  const tableMat = new THREE.MeshStandardMaterial({
-    color: '#1a5c2a',
-    roughness: 0.8,
+  // 상판 — 밝은 세이지 그린 펠트, 모서리 라운딩
+  const feltMat = new THREE.MeshStandardMaterial({
+    map: createFeltTexture(),
+    roughness: 0.85,
     metalness: 0.0,
   })
-  const tableMesh = new THREE.Mesh(tableGeo, tableMat)
+  const feltSideMat = new THREE.MeshStandardMaterial({ color: '#3f8f60', roughness: 0.85 })
+  const topGeo = new RoundedBoxGeometry(8, 0.3, 6, 2, 0.06)
+  // 면 순서 +x,-x,+y,-y,+z,-z — 윗면(+y)만 펠트 텍스처
+  const tableMesh = new THREE.Mesh(topGeo, [
+    feltSideMat, feltSideMat, feltMat, feltSideMat, feltSideMat, feltSideMat,
+  ])
   tableMesh.position.y = -0.15
   tableMesh.receiveShadow = true
   scene.add(tableMesh)
 
-  // 테이블 가장자리 (나무 프레임)
+  // 테이블 가장자리 — 밝은 오크 프레임 (라운딩된 레일)
   const frameMat = new THREE.MeshStandardMaterial({
-    color: '#4a3020',
-    roughness: 0.6,
-    metalness: 0.1,
+    color: '#c9a26b',
+    roughness: 0.5,
+    metalness: 0.05,
   })
 
-  const edgeH = new THREE.BoxGeometry(8.4, 0.4, 0.2)
-  const edgeV = new THREE.BoxGeometry(0.2, 0.4, 6.4)
+  const edgeH = new RoundedBoxGeometry(8.7, 0.45, 0.35, 2, 0.09)
+  const edgeV = new RoundedBoxGeometry(0.35, 0.45, 6.7, 2, 0.09)
 
   const edgeFront = new THREE.Mesh(edgeH, frameMat)
-  edgeFront.position.set(0, 0, 3.1)
+  edgeFront.position.set(0, 0.03, 3.17)
   edgeFront.castShadow = true
+  edgeFront.receiveShadow = true
   scene.add(edgeFront)
 
   const edgeBack = new THREE.Mesh(edgeH, frameMat)
-  edgeBack.position.set(0, 0, -3.1)
+  edgeBack.position.set(0, 0.03, -3.17)
   edgeBack.castShadow = true
+  edgeBack.receiveShadow = true
   scene.add(edgeBack)
 
   const edgeLeft = new THREE.Mesh(edgeV, frameMat)
-  edgeLeft.position.set(-4.1, 0, 0)
+  edgeLeft.position.set(-4.17, 0.03, 0)
   edgeLeft.castShadow = true
+  edgeLeft.receiveShadow = true
   scene.add(edgeLeft)
 
   const edgeRight = new THREE.Mesh(edgeV, frameMat)
-  edgeRight.position.set(4.1, 0, 0)
+  edgeRight.position.set(4.17, 0.03, 0)
   edgeRight.castShadow = true
+  edgeRight.receiveShadow = true
   scene.add(edgeRight)
 
   // 물리: 테이블 바디 (두꺼운 콜라이더로 터널링 방지)
@@ -355,44 +396,46 @@ function createDice() {
 }
 
 // ========== 컵 생성 ==========
+// LatheGeometry로 곡선 실루엣 컵: 바깥으로 말린 립 + 잘록한 허리 + 하단 플레어
 function createCup() {
   cupGroup = new THREE.Group()
 
-  const cupRadius = 1.0
   const cupHeight = 1.8
-  const cupThickness = 0.08
 
-  // 컵 외벽 (원통)
-  const outerGeo = new THREE.CylinderGeometry(cupRadius, cupRadius * 0.9, cupHeight, 32, 1, true)
+  // 회전 프로파일 (r, y): 안쪽 바닥 → 안쪽 벽 → 립 → 바깥 벽 → 바닥 (두께 있는 셸)
+  const profile = [
+    new THREE.Vector2(0, 0.07),      // 안쪽 바닥 중심
+    new THREE.Vector2(0.76, 0.09),   // 안쪽 바닥 가장자리
+    new THREE.Vector2(0.83, 0.6),
+    new THREE.Vector2(0.86, 1.56),   // 안쪽 벽 상단
+    new THREE.Vector2(0.93, 1.73),   // 립 안쪽 곡선
+    new THREE.Vector2(1.02, 1.8),    // 립 꼭대기 (바깥으로 말림)
+    new THREE.Vector2(1.06, 1.7),    // 립 바깥
+    new THREE.Vector2(0.96, 1.25),   // 외벽 허리 (잘록)
+    new THREE.Vector2(0.94, 0.75),
+    new THREE.Vector2(1.0, 0.2),     // 하단 플레어
+    new THREE.Vector2(1.02, 0.07),
+    new THREE.Vector2(0.95, 0),      // 바닥 라운드
+    new THREE.Vector2(0, 0),         // 바닥 중심
+  ]
+  const cupGeo = new THREE.LatheGeometry(profile, 48)
   const cupMat = new THREE.MeshStandardMaterial({
-    color: '#8B4513',
-    roughness: 0.7,
-    metalness: 0.1,
+    color: '#dcb686',              // 밝은 자작나무 톤
+    roughness: 0.45,
+    metalness: 0.05,
     side: THREE.DoubleSide,
   })
-  const outer = new THREE.Mesh(outerGeo, cupMat)
-  outer.castShadow = true
-  cupGroup.add(outer)
+  const cup = new THREE.Mesh(cupGeo, cupMat)
+  cup.castShadow = true
+  cup.position.y = -cupHeight / 2 // 그룹 중심 피벗 유지 (기존 흔들기/기울이기 애니메이션 호환)
+  cupGroup.add(cup)
 
-  // 컵 바닥
-  const bottomGeo = new THREE.CircleGeometry(cupRadius * 0.9, 32)
-  const bottom = new THREE.Mesh(bottomGeo, cupMat)
-  bottom.rotation.x = -Math.PI / 2
-  bottom.position.y = -cupHeight / 2
-  cupGroup.add(bottom)
-
-  // 컵 내벽 (어두운 색)
-  const innerGeo = new THREE.CylinderGeometry(
-    cupRadius - cupThickness, cupRadius * 0.9 - cupThickness,
-    cupHeight - 0.05, 32, 1, true
-  )
-  const innerMat = new THREE.MeshStandardMaterial({
-    color: '#3a1f0d',
-    roughness: 0.9,
-    side: THREE.BackSide,
-  })
-  const inner = new THREE.Mesh(innerGeo, innerMat)
-  cupGroup.add(inner)
+  // 립 아래 액센트 밴드
+  const bandMat = new THREE.MeshStandardMaterial({ color: '#8a5f3d', roughness: 0.5 })
+  const band = new THREE.Mesh(new THREE.TorusGeometry(0.99, 0.028, 12, 48), bandMat)
+  band.rotation.x = Math.PI / 2
+  band.position.y = 1.42 - cupHeight / 2
+  cupGroup.add(band)
 
   // 테이블 위 오른쪽에 배치
   cupGroup.position.set(3, cupHeight / 2 + 0.01, 0)
