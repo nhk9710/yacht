@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
 import * as THREE from 'three'
+import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js'
 import * as CANNON from 'cannon-es'
 import { useGameStore } from '../../stores/gameStore'
 import { useSocket } from '../../composables/useSocket'
@@ -148,6 +149,9 @@ function initScene() {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
   renderer.shadowMap.enabled = true
   renderer.shadowMap.type = THREE.PCFSoftShadowMap
+  // 그림자 맵은 움직임이 있을 때만 갱신 (animate 루프에서 needsUpdate 제어)
+  renderer.shadowMap.autoUpdate = false
+  renderer.shadowMap.needsUpdate = true
   renderer.toneMapping = THREE.ACESFilmicToneMapping
   renderer.toneMappingExposure = 1.2
   updateRendererSize()
@@ -273,18 +277,22 @@ function createTable() {
 }
 
 // ========== 벽 생성 (보이지 않는 물리 벽) ==========
+// 주사위가 y=4 부근에서 발사되고 공중 충돌로 튈 수 있으므로,
+// 벽을 발사 높이보다 충분히 높게(y=7) 올리고 천장까지 덮어 완전히 밀폐한다.
 function createWalls() {
-  const wallShape = new CANNON.Box(new CANNON.Vec3(4, 2, 0.1))
+  const WALL_HALF_H = 4    // 벽 반높이 (중심 y=3 → 범위 -1 ~ 7)
+  const WALL_HALF_T = 0.5  // 벽 반두께 (고속 관통 방지)
   const wallMat = tableMaterial
 
+  const wallShape = new CANNON.Box(new CANNON.Vec3(4 + WALL_HALF_T * 2, WALL_HALF_H, WALL_HALF_T))
   const positions = [
-    new CANNON.Vec3(0, 1, 3),    // 앞
-    new CANNON.Vec3(0, 1, -3),   // 뒤
+    new CANNON.Vec3(0, 3, 3 + WALL_HALF_T),    // 앞
+    new CANNON.Vec3(0, 3, -3 - WALL_HALF_T),   // 뒤
   ]
-  const wallShapeSide = new CANNON.Box(new CANNON.Vec3(0.1, 2, 3))
+  const wallShapeSide = new CANNON.Box(new CANNON.Vec3(WALL_HALF_T, WALL_HALF_H, 3 + WALL_HALF_T * 2))
   const sidePositions = [
-    new CANNON.Vec3(4, 1, 0),    // 오른쪽
-    new CANNON.Vec3(-4, 1, 0),   // 왼쪽
+    new CANNON.Vec3(4 + WALL_HALF_T, 3, 0),    // 오른쪽
+    new CANNON.Vec3(-4 - WALL_HALF_T, 3, 0),   // 왼쪽
   ]
 
   for (const pos of positions) {
@@ -301,6 +309,13 @@ function createWalls() {
     world.addBody(body)
     wallBodies.push(body)
   }
+
+  // 천장 (벽 상단을 덮어 밀폐)
+  const ceiling = new CANNON.Body({ type: CANNON.Body.STATIC, material: wallMat })
+  ceiling.addShape(new CANNON.Box(new CANNON.Vec3(5, 0.25, 4)))
+  ceiling.position.set(0, 7.25, 0)
+  world.addBody(ceiling)
+  wallBodies.push(ceiling)
 }
 
 // ========== 주사위 생성 ==========
@@ -309,9 +324,8 @@ const DICE_HALF = DICE_SIZE / 2
 
 function createDice() {
   for (let i = 0; i < 5; i++) {
-    // Three.js 메시
-    const geo = new THREE.BoxGeometry(DICE_SIZE, DICE_SIZE, DICE_SIZE)
-    // 모서리 깎기 효과를 위한 bevel은 BoxGeometry로 직접 안 됨 → 대신 살짝 작게
+    // Three.js 메시 — RoundedBoxGeometry는 BoxGeometry를 상속하므로 6면 재질 그룹이 유지됨
+    const geo = new RoundedBoxGeometry(DICE_SIZE, DICE_SIZE, DICE_SIZE, 4, DICE_SIZE * 0.12)
     const materials = createDiceMaterials()
     const mesh = new THREE.Mesh(geo, materials)
     mesh.castShadow = true
@@ -322,9 +336,10 @@ function createDice() {
     scene.add(mesh)
     diceMeshes.push(mesh)
 
-    // Cannon-es 바디
+    // Cannon-es 바디 (굴릴 때만 DYNAMIC으로 전환 — 유휴 시 물리 스텝 생략 가능)
     const body = new CANNON.Body({
       mass: 0.3,
+      type: CANNON.Body.STATIC,
       material: diceMaterial,
       shape: new CANNON.Box(new CANNON.Vec3(DICE_HALF, DICE_HALF, DICE_HALF)),
       allowSleep: true,
@@ -734,6 +749,14 @@ function onRollerDiceSettled() {
   if (resultSent) return
   resultSent = true
 
+  // 메시를 실제 물리 바디 정지 자세로 스냅 (보간 값은 반 스텝 지연될 수 있음)
+  for (let i = 0; i < 5; i++) {
+    if (!store.turnState.kept[i] && diceBodies[i].type === CANNON.Body.DYNAMIC) {
+      diceMeshes[i].position.copy(diceBodies[i].position as any)
+      diceMeshes[i].quaternion.copy(diceBodies[i].quaternion as any)
+    }
+  }
+
   // 각 주사위의 윗면 값 읽기
   const values: number[] = []
   for (let i = 0; i < 5; i++) {
@@ -762,6 +785,10 @@ function onRollerDiceSettled() {
 }
 
 // ========== 유지된 주사위 하이라이트 ==========
+// 매 프레임 호출되므로 Color 객체를 재사용 (per-frame 할당 → GC 끊김 방지)
+const KEPT_EMISSIVE = new THREE.Color('#2244aa')
+const NO_EMISSIVE = new THREE.Color('#000000')
+
 function updateKeptVisuals() {
   for (let i = 0; i < 5; i++) {
     const mesh = diceMeshes[i]
@@ -771,38 +798,54 @@ function updateKeptVisuals() {
     const isKept = store.turnState.kept[i]
 
     materials.forEach(mat => {
-      mat.emissive = isKept
-        ? new THREE.Color('#2244aa')
-        : new THREE.Color('#000000')
+      mat.emissive.copy(isKept ? KEPT_EMISSIVE : NO_EMISSIVE)
       mat.emissiveIntensity = isKept ? 0.3 : 0
     })
   }
 }
 
 // ========== 렌더 루프 ==========
+let lastFrameTime = 0
+let lastActiveTime = 0 // 마지막으로 씬에 움직임이 있던 시각 (그림자 갱신 유예용)
+
 function animate() {
   animFrameId = requestAnimationFrame(animate)
 
-  const isObserverStreaming = store.isRolling && !store.isMyRolling
+  // 실제 경과 시간 (하드코딩된 1/60 대신 — 120Hz 모니터 2배속/저사양 슬로모션 방지)
+  const now = performance.now()
+  const dt = lastFrameTime > 0 ? Math.min((now - lastFrameTime) / 1000, 0.1) : 1 / 60
+  lastFrameTime = now
 
-  // ===== 물리 시뮬레이션 (Observer 스트림 모드에서는 비활성화) =====
-  if (world && !isObserverStreaming) {
-    // substep을 사용하여 프레임 드롭 시에도 안정적인 물리 시뮬레이션
-    // fixedTimeStep=1/120, maxSubSteps=5로 터널링 방지
-    world.step(1 / 120, 1 / 60, 5)
+  const isObserverStreaming = store.isRolling && !store.isMyRolling
+  const physicsActive = diceBodies.some(
+    b => b.type === CANNON.Body.DYNAMIC && b.sleepState !== CANNON.Body.SLEEPING
+  )
+
+  // ===== 물리 시뮬레이션 (Observer 스트림 모드·유휴 상태에서는 생략) =====
+  if (world && !isObserverStreaming && (physicsActive || store.isRolling)) {
+    // substep으로 프레임 드롭 시에도 안정적으로 시뮬레이션 (fixedTimeStep=1/120)
+    world.step(1 / 120, dt, 5)
     // 낙하한 주사위 복구
     recoverFallenDice()
   }
 
-  // ===== Roller/Idle: 물리 바디 → 메시 동기화 =====
+  // ===== Roller/Idle: 물리 바디 → 메시 동기화 (substep 보간 값 사용, 미세 떨림 방지) =====
   if (!isObserverStreaming) {
     for (let i = 0; i < 5; i++) {
       if (!diceMeshes[i].visible) continue
       if (diceBodies[i].type === CANNON.Body.DYNAMIC) {
-        diceMeshes[i].position.copy(diceBodies[i].position as any)
-        diceMeshes[i].quaternion.copy(diceBodies[i].quaternion as any)
+        diceMeshes[i].position.copy(diceBodies[i].interpolatedPosition as any)
+        diceMeshes[i].quaternion.copy(diceBodies[i].interpolatedQuaternion as any)
       }
     }
+  }
+
+  // ===== 그림자: 움직임이 있을 때 + 짧은 유예 동안만 갱신 =====
+  if (store.isRolling || cupAnimating || physicsActive) {
+    lastActiveTime = now
+  }
+  if (now - lastActiveTime < 500) {
+    renderer.shadowMap.needsUpdate = true
   }
 
   // ===== Roller: 물리 상태 스트리밍 (컵 애니메이션 포함) =====
