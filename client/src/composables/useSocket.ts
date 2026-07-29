@@ -25,6 +25,12 @@ export function useSocket() {
       console.log('[Socket] 연결 끊김')
     })
 
+    // 방 생성 또는 참가 성공
+    socket.on('room:created', ({ code, state }) => {
+      store.roomCode = code
+      store.updateRoomState(state)
+    })
+
     // 방 상태 동기화
     socket.on('room:state', (state) => {
       store.updateRoomState(state)
@@ -36,12 +42,11 @@ export function useSocket() {
     })
 
     // 턴 시작
-    socket.on('turn:begin', (data) => {
+    socket.on('turn:begin', (_data) => {
       store.turnState.rollCount = 0
       store.turnState.dice = [0, 0, 0, 0, 0]
       store.turnState.kept = [false, false, false, false, false]
       store.possibleScores = {}
-      // currentPlayerIndex는 room:state로 업데이트됨
     })
 
     // 주사위 굴림 시작 (값 없이, 물리 시뮬레이션 트리거)
@@ -54,7 +59,7 @@ export function useSocket() {
       store.updateDiceRolled(data)
     })
 
-    // 물리 스트리밍 데이터 수신 (Observer용: Roller의 주사위+컵 위치/회전 동기화)
+    // 물리 스트리밍 데이터 수신 (Observer용)
     socket.on('dice:physics-stream', (data) => {
       store.updatePhysicsStream(data)
     })
@@ -98,8 +103,21 @@ export function useSocket() {
     })
   }
 
-  function joinGame(name: string) {
-    socket?.emit('player:join', { name })
+  function createRoom(name: string) {
+    if (!socket?.connected) connect()
+    setTimeout(() => {
+      socket?.emit('room:create', { name })
+    }, 300)
+  }
+
+  function joinRoom(name: string, code: string, onError: (msg: string) => void) {
+    if (!socket?.connected) connect()
+    setTimeout(() => {
+      socket?.emit('room:join', { name, code })
+      socket?.once('room:join:error', ({ message }) => {
+        onError(message)
+      })
+    }, 300)
   }
 
   function startGame() {
@@ -141,7 +159,8 @@ export function useSocket() {
 
   return {
     connect,
-    joinGame,
+    createRoom,
+    joinRoom,
     startGame,
     rollDice,
     submitDiceResult,

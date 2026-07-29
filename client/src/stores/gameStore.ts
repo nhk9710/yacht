@@ -11,6 +11,7 @@ export const useGameStore = defineStore('game', () => {
   const connected = ref(false)
 
   // ========== 방 상태 ==========
+  const roomCode = ref<string>('')
   const phase = ref<GamePhase>('waiting')
   const players = ref<PlayerInfo[]>([])
   const currentPlayerIndex = ref(0)
@@ -175,6 +176,7 @@ export const useGameStore = defineStore('game', () => {
   }
 
   function reset() {
+    roomCode.value = ''
     phase.value = 'waiting'
     players.value = []
     currentPlayerIndex.value = 0
@@ -196,7 +198,7 @@ export const useGameStore = defineStore('game', () => {
 
   return {
     // State
-    mySocketId, connected, phase, players,
+    mySocketId, connected, roomCode, phase, players,
     currentPlayerIndex, currentRound, turnState,
     myScores, myBonus, myTotal, possibleScores,
     rankings, isRolling, rollingPlayerId, physicsStreamData,

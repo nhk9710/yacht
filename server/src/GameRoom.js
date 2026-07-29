@@ -14,7 +14,8 @@ const TOTAL_ROUNDS = 12;
 const DISCONNECT_TIMEOUT = 30000; // 30초
 
 export class GameRoom {
-  constructor() {
+  constructor(roomId) {
+    this.roomId = roomId;
     this.players = [];
     this.phase = 'waiting'; // waiting | playing | finished
     this.currentPlayerIndex = 0;

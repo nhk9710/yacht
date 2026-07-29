@@ -1,35 +1,52 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useGameStore } from '../stores/gameStore'
 import { useSocket } from '../composables/useSocket'
 
 const store = useGameStore()
 const socket = useSocket()
 
+// 화면 모드: '' | 'create' | 'join'
+const mode = ref<'' | 'create' | 'join'>('')
 const playerName = ref('')
+const roomCodeInput = ref('')
+const joinError = ref('')
 const joined = ref(false)
+
+const maxPlayers = 5
 
 const canStart = computed(() =>
   store.isHost && store.players.length >= 1
 )
 
-function handleJoin() {
+function handleCreate() {
   if (!playerName.value.trim()) return
   socket.connect()
-  // 소켓 연결 후 join
-  setTimeout(() => {
-    socket.joinGame(playerName.value.trim())
-    joined.value = true
-  }, 300)
+  socket.createRoom(playerName.value.trim())
+  joined.value = true
+}
+
+function handleJoin() {
+  if (!playerName.value.trim() || !roomCodeInput.value.trim()) return
+  joinError.value = ''
+  socket.connect()
+  socket.joinRoom(playerName.value.trim(), roomCodeInput.value.trim(), (msg) => {
+    joinError.value = msg
+    joined.value = false
+  })
+  joined.value = true
 }
 
 function handleStart() {
   socket.startGame()
 }
 
+function copyCode() {
+  navigator.clipboard.writeText(store.roomCode).catch(() => {})
+}
+
 onMounted(() => {
-  // 이미 연결된 경우
-  if (store.connected) {
+  if (store.connected && store.roomCode) {
     joined.value = true
   }
 })
@@ -44,33 +61,80 @@ onMounted(() => {
         <p class="subtitle">Dice Game</p>
       </div>
 
-      <!-- 참가 전 -->
-      <div v-if="!joined" class="join-section">
+      <!-- 1단계: 모드 선택 -->
+      <div v-if="!joined && mode === ''" class="mode-section">
+        <button class="btn btn-primary btn-lg" @click="mode = 'create'">
+          방 만들기
+        </button>
+        <button class="btn btn-secondary btn-lg" @click="mode = 'join'">
+          방 코드로 참가
+        </button>
+      </div>
+
+      <!-- 2단계-A: 방 만들기 -->
+      <div v-else-if="!joined && mode === 'create'" class="join-section">
         <div class="input-group">
           <input
             v-model="playerName"
             class="name-input"
             placeholder="닉네임을 입력하세요"
             maxlength="12"
-            @keyup.enter="handleJoin"
+            @keyup.enter="handleCreate"
             autofocus
           />
           <button
             class="btn btn-primary btn-lg"
             :disabled="!playerName.trim()"
+            @click="handleCreate"
+          >
+            방 만들기
+          </button>
+          <button class="btn btn-ghost" @click="mode = ''">← 뒤로</button>
+        </div>
+      </div>
+
+      <!-- 2단계-B: 코드로 참가 -->
+      <div v-else-if="!joined && mode === 'join'" class="join-section">
+        <div class="input-group">
+          <input
+            v-model="playerName"
+            class="name-input"
+            placeholder="닉네임을 입력하세요"
+            maxlength="12"
+            autofocus
+          />
+          <input
+            v-model="roomCodeInput"
+            class="name-input code-input"
+            placeholder="방 코드 (예: ABCD)"
+            maxlength="4"
+            @keyup.enter="handleJoin"
+          />
+          <p v-if="joinError" class="error-text">{{ joinError }}</p>
+          <button
+            class="btn btn-primary btn-lg"
+            :disabled="!playerName.trim() || !roomCodeInput.trim()"
             @click="handleJoin"
           >
             참가하기
           </button>
+          <button class="btn btn-ghost" @click="mode = ''">← 뒤로</button>
         </div>
       </div>
 
-      <!-- 참가 후: 대기실 -->
+      <!-- 3단계: 대기실 -->
       <div v-else class="waiting-section">
+        <!-- 방 코드 표시 -->
+        <div class="room-code-panel" @click="copyCode" title="클릭해서 복사">
+          <span class="room-code-label">방 코드</span>
+          <span class="room-code">{{ store.roomCode }}</span>
+          <span class="copy-hint">클릭해서 복사</span>
+        </div>
+
         <div class="players-panel">
           <h3 class="panel-title">
             대기실
-            <span class="player-count">{{ store.players.length }} / 5</span>
+            <span class="player-count">{{ store.players.length }} / {{ maxPlayers }}</span>
           </h3>
           <div class="player-list">
             <div
@@ -78,10 +142,7 @@ onMounted(() => {
               :key="player.id"
               class="player-card"
             >
-              <span
-                class="player-dot"
-                :style="{ background: player.color }"
-              />
+              <span class="player-dot" :style="{ background: player.color }" />
               <span class="player-name">
                 {{ player.name }}
                 <span v-if="player.isHost" class="host-badge">HOST</span>
@@ -91,7 +152,7 @@ onMounted(() => {
 
             <!-- 빈 슬롯 -->
             <div
-              v-for="i in (5 - store.players.length)"
+              v-for="i in (maxPlayers - store.players.length)"
               :key="'empty-' + i"
               class="player-card empty"
             >
@@ -116,7 +177,7 @@ onMounted(() => {
         </div>
 
         <div class="connection-info">
-          <p>같은 네트워크에서 아래 주소로 접속하세요:</p>
+          <p>이 주소로 접속한 뒤 방 코드 <strong>{{ store.roomCode }}</strong>를 입력하세요</p>
           <code class="address">{{ window.location.origin }}</code>
         </div>
       </div>
@@ -130,7 +191,6 @@ onMounted(() => {
 </template>
 
 <script lang="ts">
-// window 참조를 위한 헬퍼
 export default {
   computed: {
     window() { return window }
@@ -177,6 +237,14 @@ export default {
   text-transform: uppercase;
 }
 
+/* 모드 선택 */
+.mode-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* 입력 섹션 */
 .join-section {
   text-align: center;
 }
@@ -184,7 +252,7 @@ export default {
 .input-group {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 12px;
 }
 
 .name-input {
@@ -205,11 +273,57 @@ export default {
 .name-input::placeholder {
   color: var(--text-muted);
 }
+.code-input {
+  letter-spacing: 6px;
+  font-weight: 700;
+  font-size: 20px;
+  text-transform: uppercase;
+}
 
+.error-text {
+  color: #ef4444;
+  font-size: 13px;
+  margin: 0;
+}
+
+/* 대기실 */
 .waiting-section {
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: 16px;
+}
+
+/* 방 코드 패널 */
+.room-code-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 16px;
+  background: var(--bg-secondary);
+  border: 2px solid var(--accent);
+  border-radius: 16px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.room-code-panel:hover {
+  background: rgba(99, 102, 241, 0.1);
+}
+.room-code-label {
+  font-size: 11px;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.room-code {
+  font-size: 36px;
+  font-weight: 800;
+  letter-spacing: 10px;
+  color: var(--accent);
+}
+.copy-hint {
+  font-size: 11px;
+  color: var(--text-muted);
 }
 
 .players-panel {
@@ -325,10 +439,34 @@ export default {
   color: var(--text-muted);
   margin-bottom: 8px;
 }
+.connection-info strong {
+  color: var(--accent);
+}
 .address {
   font-size: 14px;
   color: var(--accent);
   font-weight: 600;
+}
+
+/* 버튼 추가 스타일 */
+.btn-secondary {
+  background: var(--bg-secondary);
+  border: 2px solid var(--border-color);
+  color: var(--text-primary);
+}
+.btn-secondary:hover {
+  border-color: var(--accent);
+}
+.btn-ghost {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 8px;
+}
+.btn-ghost:hover {
+  color: var(--text-primary);
 }
 
 /* 배경 장식 주사위 */
