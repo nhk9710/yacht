@@ -651,34 +651,112 @@ function emitPhysicsStream() {
   socket.sendPhysicsStream(frame)
 }
 
-// ========== Observer 모드: 스트림 데이터 적용 ==========
-function applyLatestStreamData() {
-  const frame = store.physicsStreamData
-  if (!frame) return
+// ========== Observer 모드: 스트림 버퍼링 + 스냅샷 보간 ==========
+// 스트림은 ~30fps로 도착하므로 그대로 적용하면 고주사율 화면에서 끊겨 보인다.
+// 프레임을 버퍼에 쌓고, INTERP_DELAY만큼 과거 시점을 두 프레임 사이에서 보간해 렌더.
+const INTERP_DELAY = 100 // ms — 스트림 간격(33ms)의 ~3배, 네트워크 지터 흡수
+let streamBuffer: { time: number; frame: any }[] = []
+let lastBufferedFrame: any = null
+const _slerpA = new THREE.Quaternion()
+const _slerpB = new THREE.Quaternion()
 
-  // 주사위 위치/회전 적용
+function bufferStreamFrame() {
+  const f = store.physicsStreamData
+  if (f && f !== lastBufferedFrame) {
+    lastBufferedFrame = f
+    streamBuffer.push({ time: performance.now(), frame: f })
+    if (streamBuffer.length > 30) streamBuffer.shift()
+  }
+}
+
+// 프레임 한 장을 그대로 적용 (보간 불가 시 폴백)
+function applyStreamFrame(frame: any) {
   if (frame.dice) {
     for (let i = 0; i < 5; i++) {
       const d = frame.dice[i]
       if (!d) continue
-
+      diceMeshes[i].visible = d.v
       if (d.v) {
-        diceMeshes[i].visible = true
         diceMeshes[i].position.set(d.p[0], d.p[1], d.p[2])
         diceMeshes[i].quaternion.set(d.q[0], d.q[1], d.q[2], d.q[3])
-        // 물리 바디도 동기화 (다른 시스템에서 참조할 수 있으므로)
-        diceBodies[i].position.set(d.p[0], d.p[1], d.p[2])
-        diceBodies[i].quaternion.set(d.q[0], d.q[1], d.q[2], d.q[3])
       }
     }
   }
-
-  // 컵 위치/회전 적용
   if (frame.cup) {
     cupGroup.visible = frame.cup.v
     if (frame.cup.v) {
       cupGroup.position.set(frame.cup.p[0], frame.cup.p[1], frame.cup.p[2])
       cupGroup.rotation.set(frame.cup.r[0], frame.cup.r[1], frame.cup.r[2])
+    }
+  }
+}
+
+function applyInterpolatedStream() {
+  if (streamBuffer.length === 0) return
+  const renderTime = performance.now() - INTERP_DELAY
+
+  // renderTime을 사이에 두는 두 프레임 탐색
+  let older = streamBuffer[0]
+  let newer: { time: number; frame: any } | null = null
+  for (let i = streamBuffer.length - 1; i >= 0; i--) {
+    if (streamBuffer[i].time <= renderTime) {
+      older = streamBuffer[i]
+      newer = streamBuffer[i + 1] ?? null
+      break
+    }
+  }
+
+  if (!newer) {
+    // 최신 프레임이 renderTime보다 과거 (스트림 공백) → 마지막 프레임 유지
+    applyStreamFrame(streamBuffer[streamBuffer.length - 1].frame)
+    return
+  }
+
+  const span = newer.time - older.time
+  const t = span > 0 ? Math.min(Math.max((renderTime - older.time) / span, 0), 1) : 1
+  const a = older.frame
+  const b = newer.frame
+
+  if (b.dice) {
+    for (let i = 0; i < 5; i++) {
+      const db = b.dice[i]
+      if (!db) continue
+      diceMeshes[i].visible = db.v
+      if (!db.v) continue
+
+      const da = a.dice?.[i]
+      if (!da || !da.v) {
+        // 이전 프레임에 없던 주사위는 스냅
+        diceMeshes[i].position.set(db.p[0], db.p[1], db.p[2])
+        diceMeshes[i].quaternion.set(db.q[0], db.q[1], db.q[2], db.q[3])
+        continue
+      }
+
+      diceMeshes[i].position.set(
+        da.p[0] + (db.p[0] - da.p[0]) * t,
+        da.p[1] + (db.p[1] - da.p[1]) * t,
+        da.p[2] + (db.p[2] - da.p[2]) * t
+      )
+      _slerpA.set(da.q[0], da.q[1], da.q[2], da.q[3]).normalize()
+      _slerpB.set(db.q[0], db.q[1], db.q[2], db.q[3]).normalize()
+      diceMeshes[i].quaternion.slerpQuaternions(_slerpA, _slerpB, t)
+    }
+  }
+
+  if (b.cup) {
+    cupGroup.visible = b.cup.v
+    if (b.cup.v) {
+      const ca = a.cup?.v ? a.cup : b.cup
+      cupGroup.position.set(
+        ca.p[0] + (b.cup.p[0] - ca.p[0]) * t,
+        ca.p[1] + (b.cup.p[1] - ca.p[1]) * t,
+        ca.p[2] + (b.cup.p[2] - ca.p[2]) * t
+      )
+      cupGroup.rotation.set(
+        ca.r[0] + (b.cup.r[0] - ca.r[0]) * t,
+        ca.r[1] + (b.cup.r[1] - ca.r[1]) * t,
+        ca.r[2] + (b.cup.r[2] - ca.r[2]) * t
+      )
     }
   }
 }
@@ -734,8 +812,10 @@ function animateRollStreamMode() {
   isRollerMode = false
   rollingStartTime = performance.now()
 
-  // 이전 스트림 데이터 초기화
+  // 이전 스트림 데이터·보간 버퍼 초기화
   store.physicsStreamData = null
+  streamBuffer = []
+  lastBufferedFrame = null
   // 주사위 물리 바디 정적으로 전환 (Observer는 물리 시뮬레이션 불필요)
   for (let i = 0; i < 5; i++) {
     diceBodies[i].type = CANNON.Body.STATIC
@@ -853,9 +933,10 @@ function animate() {
     emitPhysicsStream()
   }
 
-  // ===== Observer: 스트림 데이터 적용 =====
+  // ===== Observer: 스트림 버퍼링 + 보간 적용 =====
   if (isObserverStreaming) {
-    applyLatestStreamData()
+    bufferStreamFrame()
+    applyInterpolatedStream()
   }
 
   // ===== Roller: 주사위 정지 감지 & 결과 전송 =====
