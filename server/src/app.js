@@ -11,8 +11,13 @@ const __dirname = dirname(__filename);
 
 /**
  * 게임 서버 생성 (listen은 호출자 몫 — 테스트에서 임의 포트 사용)
+ * @param {{ emptyRoomGraceMs?: number }} options
+ *   emptyRoomGraceMs: 게임 중 전원이 끊긴 방을 삭제하기까지의 유예 시간.
+ *   브라우저 백그라운드 탭 스로틀링 등으로 일시에 전원이 끊겨도 재접속 여지를 준다.
  */
-export function createGameServer() {
+export function createGameServer(options = {}) {
+  const emptyRoomGraceMs = options.emptyRoomGraceMs ?? 10 * 60 * 1000; // 기본 10분
+
   const app = express();
   const httpServer = createServer(app);
   const io = new Server(httpServer, {
@@ -20,6 +25,8 @@ export function createGameServer() {
       origin: '*',
       methods: ['GET', 'POST'],
     },
+    // 백그라운드 탭 스로틀링으로 pong이 늦어도 버티도록 여유 있게 (기본 20초)
+    pingTimeout: 60000,
   });
 
   // ========== 멀티 게임 방 관리 ==========
@@ -60,10 +67,25 @@ export function createGameServer() {
   }
 
   function cleanupRoomIfEmpty(room) {
-    if (room.players.filter(p => p.isConnected).length === 0) {
+    if (room.players.filter(p => p.isConnected).length > 0) return;
+
+    // 대기실은 재접속 대상이 없으므로 즉시 삭제
+    if (room.phase === 'waiting') {
       rooms.delete(room.roomId);
       console.log(`[방 삭제] ${room.roomId}`);
+      return;
     }
+
+    // 게임 중/종료 방은 유예 후 삭제 — 그 사이 재접속하면 유지
+    clearTimeout(room.emptyRoomTimer);
+    room.emptyRoomTimer = setTimeout(() => {
+      if (room.players.filter(p => p.isConnected).length === 0) {
+        rooms.delete(room.roomId);
+        console.log(`[방 삭제] ${room.roomId} (빈 방 유예 만료)`);
+      }
+    }, emptyRoomGraceMs);
+    room.emptyRoomTimer.unref?.();
+    console.log(`[빈 방 유예] ${room.roomId} — ${Math.round(emptyRoomGraceMs / 1000)}초 후 삭제 예정`);
   }
 
   io.on('connection', (socket) => {
@@ -137,6 +159,15 @@ export function createGameServer() {
 
       socketToRoom.set(socket.id, upperCode);
       socket.join(upperCode);
+      clearTimeout(room.emptyRoomTimer); // 빈 방 유예 취소
+
+      // 동결됐던 게임 재개: 현재 턴 주인이 아직 끊겨 있으면 턴을 넘긴다
+      let advancedOnRejoin = false;
+      let finishedOnRejoin = false;
+      if (room.phase === 'playing' && !room.getCurrentPlayer().isConnected) {
+        advancedOnRejoin = true;
+        finishedOnRejoin = room.advanceTurn();
+      }
 
       console.log(`[재접속] ${upperCode} — ${player.name}`);
       socket.emit('room:rejoined', { code: upperCode, state: room.getRoomState() });
@@ -145,7 +176,17 @@ export function createGameServer() {
       const scoreCard = room.getPlayerScoreCard(socket.id);
       if (scoreCard) socket.emit('score:card', scoreCard);
 
-      if (room.phase === 'finished') {
+      if (finishedOnRejoin) {
+        io.to(upperCode).emit('game:finished', { rankings: room.calculateRankings() });
+      } else if (advancedOnRejoin) {
+        // 턴이 실제로 넘어간 경우에만 알림 (진행 중이던 턴은 건드리지 않음)
+        const currentPlayer = room.getCurrentPlayer();
+        io.to(upperCode).emit('turn:begin', {
+          playerId: currentPlayer.id,
+          playerName: currentPlayer.name,
+          round: room.currentRound,
+        });
+      } else if (room.phase === 'finished') {
         socket.emit('game:finished', { rankings: room.calculateRankings() });
       }
     });
@@ -395,7 +436,10 @@ export function createGameServer() {
             playerName: player.name,
           });
 
-          if (wasCurrentPlayer) {
+          // 전원 이탈 시엔 턴을 넘기지 않고 상태 동결 (빈 방 유예 동안 재접속 대기).
+          // 턴을 넘기면 advanceTurn이 끊긴 전원을 0점 처리해 게임을 끝내버린다.
+          const hasConnected = room.players.some(p => p.isConnected);
+          if (wasCurrentPlayer && hasConnected) {
             const finished = room.advanceTurn();
             if (finished) {
               console.log(`[게임 종료] ${room.roomId} — 이탈 플레이어 0점 처리로 전원 완료`);

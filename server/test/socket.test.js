@@ -56,7 +56,7 @@ async function setupTwoPlayerGame() {
 }
 
 beforeEach(async () => {
-  ({ httpServer, io } = createGameServer());
+  ({ httpServer, io } = createGameServer({ emptyRoomGraceMs: 400 }));
   await new Promise(resolve => httpServer.listen(0, resolve));
   port = httpServer.address().port;
 });
@@ -98,6 +98,41 @@ describe('재접속 프로토콜 (Critical 2)', () => {
     const { message } = await waitFor(cNew, 'room:rejoin:error');
 
     assert.ok(message);
+  });
+});
+
+describe('빈 방 유예 (일시적 전원 이탈 시 방 유지)', () => {
+  test('게임 중 전원이 끊겨도 유예 시간 내 재접속하면 방이 유지된다', async () => {
+    const { cA, cB, code } = await setupTwoPlayerGame();
+    const oldIdA = cA.id;
+
+    cA.disconnect();
+    cB.disconnect();
+    await new Promise(r => setTimeout(r, 100)); // 서버가 끊김 처리할 시간 (유예 400ms 내)
+
+    const cNew = await connect();
+    const rejoined = waitFor(cNew, 'room:rejoined');
+    cNew.emit('room:rejoin', { code, playerId: oldIdA });
+    const { state } = await rejoined;
+
+    assert.equal(state.phase, 'playing');
+    assert.equal(state.players.find(p => p.id === cNew.id)?.name, 'A');
+    // 끊겨 있는 B의 턴이었다면 재접속한 A에게 턴이 넘어와야 함 (교착 방지)
+    assert.equal(state.players[state.currentPlayerIndex].id, cNew.id);
+  });
+
+  test('유예 시간이 지나면 빈 방이 삭제되어 재접속할 수 없다', async () => {
+    const { cA, cB, code } = await setupTwoPlayerGame();
+    const oldIdA = cA.id;
+
+    cA.disconnect();
+    cB.disconnect();
+    await new Promise(r => setTimeout(r, 700)); // 유예(400ms) 경과
+
+    const cNew = await connect();
+    const failed = waitFor(cNew, 'room:rejoin:error');
+    cNew.emit('room:rejoin', { code, playerId: oldIdA });
+    await failed;
   });
 });
 
