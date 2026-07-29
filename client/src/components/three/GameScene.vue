@@ -229,8 +229,8 @@ function createFeltTexture(): THREE.CanvasTexture {
   const ctx = canvas.getContext('2d')!
 
   const grad = ctx.createRadialGradient(w / 2, h / 2, 80, w / 2, h / 2, w * 0.62)
-  grad.addColorStop(0, '#66c08e')
-  grad.addColorStop(1, '#3f9e68')
+  grad.addColorStop(0, '#52aa77')
+  grad.addColorStop(1, '#348a57')
   ctx.fillStyle = grad
   ctx.fillRect(0, 0, w, h)
 
@@ -259,7 +259,7 @@ function createTable() {
     roughness: 0.85,
     metalness: 0.0,
   })
-  const feltSideMat = new THREE.MeshStandardMaterial({ color: '#3f8f60', roughness: 0.85 })
+  const feltSideMat = new THREE.MeshStandardMaterial({ color: '#357c52', roughness: 0.85 })
   const topGeo = new RoundedBoxGeometry(8, 0.3, 6, 2, 0.06)
   // 면 순서 +x,-x,+y,-y,+z,-z — 윗면(+y)만 펠트 텍스처
   const tableMesh = new THREE.Mesh(topGeo, [
